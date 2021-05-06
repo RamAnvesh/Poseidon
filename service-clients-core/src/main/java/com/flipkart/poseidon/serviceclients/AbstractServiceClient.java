@@ -39,6 +39,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Future;
 
@@ -47,7 +48,7 @@ import static com.flipkart.poseidon.serviceclients.ServiceClientConstants.HEADER
 
 /**
  * Created by mohan.pandian on 24/02/15.
- *
+ * <p>
  * Generated service client implementations will extend this abstract class
  */
 public abstract class AbstractServiceClient implements ServiceClient {
@@ -66,7 +67,7 @@ public abstract class AbstractServiceClient implements ServiceClient {
     }
 
     protected final <T> FutureTaskResultToDomainObjectPromiseWrapper<T> execute(JavaType javaType, String uri, String httpMethod,
-                                  Map<String, String> headersMap, Object requestObject, String commandName) throws IOException {
+                                                                                Map<String, String> headersMap, Object requestObject, String commandName) throws IOException {
         return execute(new ServiceExecutePropertiesBuilder().setJavaType(javaType).setUri(uri).setHttpMethod(httpMethod).setHeadersMap(headersMap).setRequestObject(requestObject).setCommandName(commandName).setRequestCachingEnabled(false).build());
     }
 
@@ -75,85 +76,35 @@ public abstract class AbstractServiceClient implements ServiceClient {
     }
 
     protected final <T> FutureTaskResultToDomainObjectPromiseWrapper<T> execute(ServiceExecuteProperties properties) throws IOException {
-        Logger logger = LoggerFactory.getLogger(getClass());
-
-        String commandName = properties.getCommandName();
-        String uri = properties.getUri();
-        String httpMethod = properties.getHttpMethod();
-        boolean requestCachingEnabled = properties.isRequestCachingEnabled();
-        Map<String, String> headersMap = properties.getHeadersMap();
-        Object requestObject = properties.getRequestObject();
-        JavaType javaType = properties.getJavaType();
-        JavaType errorType = properties.getErrorType();
-        List<FormField> formFields = properties.getFormFields();
-        Map<String, ServiceResponseInfo> serviceResponseInfoMap = properties.getServiceResponseInfoMap();
-
-        if (commandName == null || commandName.isEmpty()) {
-            commandName = getCommandName();
-        }
-
-        if (ServiceContext.get(ServiceClientConstants.COLLECT_COMMANDS) != null && (boolean) ServiceContext.get(ServiceClientConstants.COLLECT_COMMANDS)) {
-            ConcurrentLinkedQueue<String> commandNames = ServiceContext.get(ServiceClientConstants.COMMANDS);
-            commandNames.add(commandName);
-        }
-
-        logger.info("Executing {} with {} {}", commandName, httpMethod, uri);
-
-        Map<String, Object> params = new HashMap<>();
-        params.put(HTTP_URI, uri);
-        params.put(HTTP_METHOD, httpMethod);
-        params.put(HTTP_FORM_FIELDS, formFields);
-        if (requestCachingEnabled) {
-            params.put(X_CACHE_REQUEST, "true");
-        }
-
-        Map<String, String> injectedHeadersMap = injectHeaders(headersMap);
-        if (!injectedHeadersMap.isEmpty()) {
-            try {
-                params.put(HTTP_HEADERS, injectedHeadersMap);
-            } catch (Exception e) {
-                logger.error("Error serializing headers", e);
-                throw new IOException("Headers serialization error", e);
-            }
-        }
-
-        byte[] payload = null;
-        if (requestObject != null) {
-            try {
-                if (requestObject instanceof String) {
-                    payload = ((String) requestObject).getBytes();
-                } else if (requestObject instanceof byte[]) {
-                    payload = (byte[]) requestObject;
-                } else {
-                    payload = getObjectMapper().writeValueAsBytes(requestObject);
-                }
-            } catch (Exception e) {
-                logger.error("Error serializing request object", e);
-                throw new IOException("Request object serialization error", e);
-            }
-        }
-
+        CommandInfo commandInfo = this.<T>fromProperties(properties);
         TaskContext taskContext = TaskContextFactory.getTaskContext();
 
-        if (serviceResponseInfoMap.isEmpty()) {
-            serviceResponseInfoMap.put("200", new ServiceResponseInfo(javaType, null));
-            exceptions.forEach((status, errorClass) -> {
-                serviceResponseInfoMap.put(status, new ServiceResponseInfo(errorType, errorClass));
-            });
-        }
-
-        ServiceResponseDecoder<T> serviceResponseDecoder =
-                new ServiceResponseDecoder<>(
-                        getObjectMapper(), logger,
-                        serviceResponseInfoMap, ServiceContext.getCollectedHeaders());
-        Future<TaskResult> future = taskContext.executeAsyncCommand(commandName, payload,
-                params, serviceResponseDecoder);
+        Future<? extends TaskResult<?>> future = taskContext.executeAsyncCommand(commandInfo.getCommandName(), commandInfo.getPayload(),
+                commandInfo.getParams(), commandInfo.getDecoder());
 
         final Boolean throwOriginal = ServiceContext.get(ServiceClientConstants.THROW_ORIGINAL);
-        FutureTaskResultToDomainObjectPromiseWrapper<T> futureWrapper = new FutureTaskResultToDomainObjectPromiseWrapper<>(future, Optional.ofNullable(throwOriginal).orElse(false));
+        FutureTaskResultToDomainObjectPromiseWrapper<T> futureWrapper = new FutureTaskResultToDomainObjectPromiseWrapper(future, Optional.ofNullable(throwOriginal).orElse(false));
 
         if (ServiceContext.isDebug()) {
-            properties.setHeadersMap(injectedHeadersMap);
+            properties.setHeadersMap(commandInfo.getInjectedHeadersMap());
+            ServiceContext.addDebugResponse(this.getClass().getName(), new ServiceDebug(properties, futureWrapper));
+        }
+
+        return futureWrapper;
+    }
+
+    protected final <T> CompletableFutureTaskResultToDomainObjectPromiseWrapper<T> executeAsync(ServiceExecuteProperties properties) throws IOException {
+        CommandInfo commandInfo = this.<T>fromProperties(properties);
+        TaskContext taskContext = TaskContextFactory.getTaskContext();
+
+        CompletableFuture<TaskResult<Object>> future = taskContext.executeAsyncCommandV2(commandInfo.getCommandName(), commandInfo.getPayload(),
+                commandInfo.getParams(), commandInfo.getDecoder());
+
+        final Boolean throwOriginal = ServiceContext.get(ServiceClientConstants.THROW_ORIGINAL);
+        CompletableFutureTaskResultToDomainObjectPromiseWrapper<T> futureWrapper = new CompletableFutureTaskResultToDomainObjectPromiseWrapper(future, Optional.ofNullable(throwOriginal).orElse(false));
+
+        if (ServiceContext.isDebug()) {
+            properties.setHeadersMap(commandInfo.getInjectedHeadersMap());
             ServiceContext.addDebugResponse(this.getClass().getName(), new ServiceDebug(properties, futureWrapper));
         }
 
@@ -220,9 +171,9 @@ public abstract class AbstractServiceClient implements ServiceClient {
     protected String getQueryURI(List<String> params) {
         StringBuilder queryURI = new StringBuilder();
         Boolean first = true;
-        for(String param: params) {
-            if(param == null || param.isEmpty()) continue;
-            if(first) {
+        for (String param : params) {
+            if (param == null || param.isEmpty()) continue;
+            if (first) {
                 queryURI.append("?");
                 first = false;
             } else {
@@ -241,7 +192,7 @@ public abstract class AbstractServiceClient implements ServiceClient {
         StringBuilder queryURI = new StringBuilder();
         if (paramValues != null && !paramValues.isEmpty()) {
             boolean first = true;
-            for (T paramValue: paramValues) {
+            for (T paramValue : paramValues) {
                 if (paramValue == null) {
                     continue;
                 }
@@ -310,5 +261,114 @@ public abstract class AbstractServiceClient implements ServiceClient {
 
     protected ObjectMapper getObjectMapper() {
         return objectMapper;
+    }
+
+    private <T> CommandInfo fromProperties(ServiceExecuteProperties properties) throws IOException {
+        Logger logger = LoggerFactory.getLogger(getClass());
+
+        String commandName = properties.getCommandName();
+        String uri = properties.getUri();
+        String httpMethod = properties.getHttpMethod();
+        boolean requestCachingEnabled = properties.isRequestCachingEnabled();
+        Map<String, String> headersMap = properties.getHeadersMap();
+        Object requestObject = properties.getRequestObject();
+        JavaType javaType = properties.getJavaType();
+        JavaType errorType = properties.getErrorType();
+        List<FormField> formFields = properties.getFormFields();
+        Map<String, ServiceResponseInfo> serviceResponseInfoMap = properties.getServiceResponseInfoMap();
+
+        if (commandName == null || commandName.isEmpty()) {
+            commandName = getCommandName();
+        }
+
+        if (ServiceContext.get(ServiceClientConstants.COLLECT_COMMANDS) != null && (boolean) ServiceContext.get(ServiceClientConstants.COLLECT_COMMANDS)) {
+            ConcurrentLinkedQueue<String> commandNames = ServiceContext.get(ServiceClientConstants.COMMANDS);
+            commandNames.add(commandName);
+        }
+
+        logger.info("Executing {} with {} {}", commandName, httpMethod, uri);
+
+        Map<String, Object> params = new HashMap<>();
+        params.put(HTTP_URI, uri);
+        params.put(HTTP_METHOD, httpMethod);
+        params.put(HTTP_FORM_FIELDS, formFields);
+        if (requestCachingEnabled) {
+            params.put(X_CACHE_REQUEST, "true");
+        }
+
+        Map<String, String> injectedHeadersMap = injectHeaders(headersMap);
+        if (!injectedHeadersMap.isEmpty()) {
+            try {
+                params.put(HTTP_HEADERS, injectedHeadersMap);
+            } catch (Exception e) {
+                logger.error("Error serializing headers", e);
+                throw new IOException("Headers serialization error", e);
+            }
+        }
+
+        byte[] payload = null;
+        if (requestObject != null) {
+            try {
+                if (requestObject instanceof String) {
+                    payload = ((String) requestObject).getBytes();
+                } else if (requestObject instanceof byte[]) {
+                    payload = (byte[]) requestObject;
+                } else {
+                    payload = getObjectMapper().writeValueAsBytes(requestObject);
+                }
+            } catch (Exception e) {
+                logger.error("Error serializing request object", e);
+                throw new IOException("Request object serialization error", e);
+            }
+        }
+
+        if (serviceResponseInfoMap.isEmpty()) {
+            serviceResponseInfoMap.put("200", new ServiceResponseInfo(javaType, null));
+            exceptions.forEach((status, errorClass) -> {
+                serviceResponseInfoMap.put(status, new ServiceResponseInfo(errorType, errorClass));
+            });
+        }
+
+        ServiceResponseDecoder<T> serviceResponseDecoder =
+                new ServiceResponseDecoder<>(
+                        getObjectMapper(), logger,
+                        serviceResponseInfoMap, ServiceContext.getCollectedHeaders());
+        return new CommandInfo(commandName, params, injectedHeadersMap, payload, serviceResponseDecoder);
+    }
+
+    private static class CommandInfo {
+        String commandName;
+        Map<String, Object> params = new HashMap<>();
+        Map<String, String> injectedHeadersMap;
+        byte[] payload;
+        ServiceResponseDecoder decoder;
+
+        public CommandInfo(String commandName, Map<String, Object> params, Map<String, String> injectedHeadersMap, byte[] payload, ServiceResponseDecoder decoder) {
+            this.commandName = commandName;
+            this.params = params;
+            this.injectedHeadersMap = injectedHeadersMap;
+            this.payload = payload;
+            this.decoder = decoder;
+        }
+
+        public String getCommandName() {
+            return commandName;
+        }
+
+        public Map<String, Object> getParams() {
+            return params;
+        }
+
+        public Map<String, String> getInjectedHeadersMap() {
+            return injectedHeadersMap;
+        }
+
+        public byte[] getPayload() {
+            return payload;
+        }
+
+        public ServiceResponseDecoder getDecoder() {
+            return decoder;
+        }
     }
 }

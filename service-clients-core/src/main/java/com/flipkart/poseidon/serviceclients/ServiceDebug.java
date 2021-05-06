@@ -5,9 +5,9 @@ package com.flipkart.poseidon.serviceclients;
  */
 public class ServiceDebug {
     private final ServiceExecuteProperties properties;
-    private final FutureTaskResultToDomainObjectPromiseWrapper responsePromise;
+    private final AbstractFutureTaskResultToDomainObjectPromiseWrapper responsePromise;
 
-    public ServiceDebug(ServiceExecuteProperties properties, FutureTaskResultToDomainObjectPromiseWrapper responsePromise) {
+    public ServiceDebug(ServiceExecuteProperties properties, AbstractFutureTaskResultToDomainObjectPromiseWrapper responsePromise) {
         this.properties = properties;
         this.responsePromise = responsePromise;
     }
@@ -16,7 +16,7 @@ public class ServiceDebug {
         return properties;
     }
 
-    public FutureTaskResultToDomainObjectPromiseWrapper getResponsePromise() {
+    public AbstractFutureTaskResultToDomainObjectPromiseWrapper getResponsePromise() {
         return responsePromise;
     }
 }
